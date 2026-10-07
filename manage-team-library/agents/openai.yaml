@@ -1,0 +1,4 @@
+interface:
+  display_name: "团队工具助手"
+  short_description: "接入团队工具库，更新工具、维护规则并共享改进"
+  default_prompt: "使用 $manage-team-library 帮我处理团队工具库的接入或维护。"
