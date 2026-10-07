@@ -35,7 +35,7 @@ node scripts/team-library.mjs update --repo OWNER/REPO --workspace ABSOLUTE_PATH
 
 ## 助手与 Core 的升级
 
-团队内容更新、外置助手更新、Core 升级是不同操作。外置助手从同一公开发布源取得固定版本，核对摘要，从新下载目录运行 `install --agent HOST`；收据校验发现本地修改会停止，不覆盖。团队不能通过共享 Skill 重新分发同名助手。宿主当前会话不会自动切换到新规则。
+团队内容更新、外置助手更新、Core 升级是不同操作。外置助手从同一公开发布源取得 `assistant.lock.json` 指定版本，核对摘要，从新下载目录运行 `install --agent HOST`；收据校验发现本地修改会停止，不覆盖。单独安装 Claude 助手前，核对已有 TeamAI 的 `toolRoots.claude`，以该值传入 `CLAUDE_CONFIG_DIR`，不能仅因当前终端没有环境变量就改用默认目录；connect/update 会自动沿用记录。团队不能通过共享 Skill 重新分发同名助手。宿主当前会话不会自动切换到新规则。
 
 Core 仅在用户要求升级时采用新锁定版本，检查 package.json、package-lock.json、Core 锁的一致性，并验证同步、冲突、个人内容保护和恢复。不修改 node_modules，不将整个模板覆盖公司内容。
 

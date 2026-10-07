@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { NAME, SOURCE, install, inventory, repository, hostDirectory, createClient, connect } from '../manage-team-library/scripts/team-library.mjs';
+import { NAME, SOURCE, install, inventory, repository, hostDirectory, connectedEnvironment, createClient, connect } from '../manage-team-library/scripts/team-library.mjs';
 
 const ok = data => ({ status: 0, stdout: data === undefined ? '' : JSON.stringify(data), stderr: '' });
 const notFound = () => ({ status: 1, stdout: '', stderr: 'gh: Not Found (HTTP 404)' });
@@ -45,6 +45,18 @@ test('host selection honors explicit roots and rejects Doubao before filesystem 
   assert.equal(hostDirectory('workbuddy', home, { WORKBUDDY_CONFIG_DIR: path.join(home, 'WorkBuddy 工作区') }), path.join(home, 'WorkBuddy 工作区', 'skills', NAME));
   assert.throws(() => install({ agent: 'doubao', home, env: {} }), { code: 'UNSUPPORTED_HOST' });
   assert.deepEqual(fs.readdirSync(home), []);
+});
+
+test('connection preserves recorded Claude root and rejects environment drift or unusable roots', t => {
+  const home = temporary(t);
+  const root = path.join(home, 'configured-claude');
+  const local = { toolRoots: { claude: root } };
+  assert.equal(hostDirectory('claude', home, connectedEnvironment(local, home, {})), path.join(root, 'skills', NAME));
+  assert.throws(() => connectedEnvironment(local, home, { CLAUDE_CONFIG_DIR: path.join(home, '.claude') }), { code: 'HOST_PATH_CHANGED' });
+  assert.throws(() => connectedEnvironment({}, home, { CLAUDE_CONFIG_DIR: root }), { code: 'HOST_PATH_CHANGED' });
+  for (const claude of [path.dirname(home), path.join(home, '.config'), path.join(home, 'nested', 'root')]) {
+    assert.throws(() => connectedEnvironment({ toolRoots: { claude } }, home, {}), { code: 'INVALID_ROOT' });
+  }
 });
 
 for (const agent of ['codex', 'claude', 'workbuddy', 'qwen', 'dsh']) test(`${agent}: complete independent package installs, repeats and preserves runtime`, t => {
@@ -187,9 +199,11 @@ test('wrong working repository fails before dependency install', t => {
 
 test('CLI launches independently and rejects unknown arguments', () => {
   const script = path.join(SOURCE, 'scripts', 'team-library.mjs');
-  const result = spawnSync(process.execPath, [script, 'install', '--force'], { encoding: 'utf8' });
-  assert.equal(result.status, 1);
-  assert.equal(JSON.parse(result.stderr).code, 'USAGE');
+  for (const args of [['install', '--force'], ['access', '--repo', 'company/library', '--apply'], ['doctor', '--agent', 'codex']]) {
+    const result = spawnSync(process.execPath, [script, ...args], { encoding: 'utf8' });
+    assert.equal(result.status, 1);
+    assert.equal(JSON.parse(result.stderr).code, 'USAGE');
+  }
 });
 
 test('all local links in shipped Markdown resolve within the package', () => {

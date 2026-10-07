@@ -53,6 +53,22 @@ export function hostDirectory(agent, home = os.homedir(), env = process.env) {
   return path.join(roots[agent], NAME);
 }
 
+export function connectedEnvironment(local, home, env) {
+  if (!local) return env;
+  const recorded = local.toolRoots?.claude;
+  const root = recorded?.startsWith('~/') ? path.join(home, recorded.slice(2)) : recorded || path.join(home, '.claude');
+  need(path.isAbsolute(root), 'INVALID_ROOT', '记录的 Claude 根必须是绝对路径。');
+  const relative = path.relative(home, root);
+  need(!path.isAbsolute(relative), 'INVALID_ROOT', 'Claude 配置根必须位于当前用户目录内。');
+  const segments = relative.split(path.sep);
+  need((segments.length === 1 && !['', '.', '..', '.config'].includes(segments[0]))
+    || (segments.length === 2 && segments[0] === '.config' && !!segments[1]), 'INVALID_ROOT', 'Claude 配置根不在当前 Core 支持的用户目录范围内。');
+  if (own(env, 'CLAUDE_CONFIG_DIR')) {
+    need(hostDirectory('claude', home, env) === path.join(root, 'skills', NAME), 'HOST_PATH_CHANGED', '当前 Claude 路径与已连接路径不同；先用 Core 核对迁移，不静默切换。');
+  }
+  return { ...env, CLAUDE_CONFIG_DIR: root };
+}
+
 export function inventory(root) {
   const files = {};
   const walk = (dir, prefix = '') => {
@@ -222,6 +238,9 @@ function loadTeam(workspace, client) {
   const key = repository(config.repo);
   const remote = repository(client.command('git', ['remote', 'get-url', 'origin'], { cwd: root }));
   need(remote === key, 'REPO_MISMATCH', 'origin 和团队配置不一致。');
+  const assistant = json(path.join(root, 'assistant.lock.json'));
+  need(assistant.schema_version === 1 && assistant.skill === NAME && assistant.repository === 'wangduoyu414-cell/team-library-assistant' && assistant.auto_update === false, 'INVALID_TEAM', '外置助手锁文件无效。');
+  need(assistant.version === VERSION, 'ASSISTANT_MISMATCH', '本助手版本与团队认可版本不符；请从公开发布页获取锁文件指定版本。');
   need(!fs.existsSync(path.join(root, 'skills', NAME)), 'TEAM_OWNS_ASSISTANT', '此团队仍分发管理助手；负责人先采用外置入口配置，再接入。');
   need(config.provider === 'github' && config.autoUpdate === false && config.sharing?.hooks?.autoApply === false && config.sharing?.registration?.autoRegister === false, 'INVALID_TEAM', '团队未采用本助手支持的手动同步配置。');
   return { root, key, read, cli: path.join(root, 'node_modules', core.fork.package, 'dist', 'index.js') };
@@ -250,35 +269,71 @@ export function connect({ repo, workspace, agent, accept = false, home = os.home
   if (local) need(local.scope === 'user' && !local.repo?.kind?.includes('http') && repository(local.repo?.remote) === key, 'OTHER_TEAM', '本机已连接其他团队或作用域；未切换、未覆盖。');
   if (updateOnly) need(local, 'NOT_CONNECTED', '尚未连接此团队，请先执行 connect。');
   if (local?.enabledAgents) need(local.enabledAgents.includes(agent) && !local.disabledAgents?.includes(agent), 'HOST_NOT_CONNECTED', '此团队未启用指定宿主。按连接说明保留既有宿主后，显式补充宿主。');
+  if (local?.repo?.localPath) {
+    const relative = path.relative(path.resolve(local.repo.localPath), root);
+    need(relative.startsWith('..' + path.sep) || relative === '..' || path.isAbsolute(relative), 'CACHE_WORKSPACE', '创作目录不能使用 TeamAI 同步缓存。');
+  }
+  let effectiveEnv = connectedEnvironment(local, home, env);
   const recipients = new Set([agent]);
+  // Persist only an unfinished migration, since Core may prune some hosts before
+  // another host's conflict stops the pull. Never rewrite Core's ownership ledger.
+  const pendingFile = path.join(home, '.teamai', 'assistant-migration.json');
+  regularPath(pendingFile);
+  const pending = fs.existsSync(pendingFile) ? json(pendingFile) : null;
+  if (pending) {
+    need(pending.version === 1 && pending.repository === key && Array.isArray(pending.targets), 'MIGRATION_CONFLICT', '迁移恢复记录与当前团队不符，已保留。');
+    for (const target of pending.targets) {
+      need(hostDirectory(target.tool, home, effectiveEnv) === target.path, 'HOST_PATH_CHANGED', '待恢复宿主路径已变化，先核对迁移记录。');
+      recipients.add(target.tool);
+    }
+  }
   const manifestFile = path.join(home, '.teamai', 'managed-resources.json');
+  let migrating = !!pending;
   if (fs.existsSync(manifestFile)) {
+    regularPath(manifestFile);
     const old = json(manifestFile).resources?.[`skills:${NAME}`];
     for (const target of old?.targets ?? []) {
-      need(hostDirectory(target.tool, home, env) === path.resolve(target.path), 'HOST_PATH_CHANGED', '原入口的安装路径与宿主路径不同，先核对路径，未执行迁移。');
+      need(hostDirectory(target.tool, home, effectiveEnv) === path.resolve(target.path), 'HOST_PATH_CHANGED', '原入口的安装路径与宿主路径不同，先核对路径，未执行迁移。');
       recipients.add(target.tool);
+      migrating = true;
     }
   }
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'team-assistant-'));
   const stagedSource = path.join(stage, NAME);
   fs.cpSync(source, stagedSource, { recursive: true });
   try {
-    const options = { cwd: stage, env: { ...env, HOME: home, USERPROFILE: home }, stdio: 'inherit' };
+    const options = { cwd: stage, env: { ...effectiveEnv, HOME: home, USERPROFILE: home }, stdio: 'inherit' };
     if (!local) client.command(process.execPath, [team.cli, 'init', `https://github.com/${key}.git`, '--scope', 'user', '--agent', agent], options);
     const connected = team.read(localFile);
     need(connected.scope === 'user' && repository(connected.repo?.remote) === key && (!connected.enabledAgents || connected.enabledAgents.includes(agent)), 'NOT_CONNECTED', '初始化没有建立预期连接；未报告成功。');
+    effectiveEnv = connectedEnvironment(connected, home, env);
+    if (migrating) {
+      const record = { version: 1, repository: key, targets: [...recipients].map(tool => ({ tool, path: hostDirectory(tool, home, effectiveEnv) })) };
+      const temporary = pendingFile + '.tmp';
+      regularPath(temporary);
+      fs.writeFileSync(temporary, JSON.stringify(record, null, 2) + '\n', { mode: 0o600 });
+      fs.renameSync(temporary, pendingFile);
+    }
     client.command(process.execPath, [team.cli, 'pull'], options);
-    const installed = [...recipients].map(host => install({ agent: host, home, env, source: stagedSource }));
+    const installed = [...recipients].map(host => install({ agent: host, home, env: effectiveEnv, source: stagedSource }));
+    if (migrating) fs.unlinkSync(pendingFile);
     return { state: 'synced', repository: key, workspace: root, assistants: installed, hostLoaded: false };
   } finally { fs.rmSync(stage, { recursive: true }); }
 }
 
 export function main(args = process.argv.slice(2)) {
   const [action, ...rest] = args;
+  const allowed = {
+    doctor: [], install: ['--agent'], access: ['--repo', '--accept-invitation'],
+    invite: ['--repo', '--user', '--apply'],
+    connect: ['--repo', '--workspace', '--agent', '--accept-invitation'],
+    update: ['--repo', '--workspace', '--agent', '--accept-invitation'],
+  };
+  need(own(allowed, action), 'USAGE', '选择 doctor、install、access、invite、connect 或 update。');
   const flags = {};
   for (let i = 0; i < rest.length; i++) {
     const key = rest[i];
-    need(['--agent', '--repo', '--workspace', '--user', '--accept-invitation', '--apply'].includes(key) && !own(flags, key), 'USAGE', '参数未知或重复。');
+    need(allowed[action].includes(key) && !own(flags, key), 'USAGE', '参数未知、重复或不适用于当前操作。');
     flags[key] = ['--accept-invitation', '--apply'].includes(key) ? true : rest[++i];
     need(flags[key] && !String(flags[key]).startsWith('--'), 'USAGE', '参数缺少值。');
   }

@@ -5,7 +5,7 @@
 | 宿主 | 用户级安装位置 | 当前边界 |
 |---|---|---|
 | Codex | `~/.agents/skills/manage-team-library` | 不同时向 `.codex/skills` 再装同名入口；新对话核实发现与调用 |
-| Claude Code | `~/.claude/skills/manage-team-library` | 配置了 `CLAUDE_CONFIG_DIR` 时采用该配置根 |
+| Claude Code | `~/.claude/skills/manage-team-library` | 首次采用 `CLAUDE_CONFIG_DIR`；已连接时沿用 Core 记录的配置根，环境冲突须先解决。团队配置使用可重定位的 `claudemd`，不固定默认目录的 `probe` |
 | WorkBuddy | `~/.workbuddy/skills/manage-team-library` | 尊重 `WORKBUDDY_CONFIG_DIR`；当前锁定 Core 的基线为 5.3.13，仅同步用户 Skill，不能宣称同步全局规则或专门角色 |
 | Qwen | `~/.qwen/skills/manage-team-library` | 团队配置须支持对应资源通道 |
 | DSH | `~/.dsh/skills/manage-team-library` | 尊重 `DSH_HOME`；DeepSeek Harness，仅锁定 Core 已验证的 0.1.1-rc.1；不是豆包办公 |
