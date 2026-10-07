@@ -89,6 +89,22 @@ export function inventory(root) {
 }
 const sameFiles = (a, b) => JSON.stringify(Object.entries(a).sort()) === JSON.stringify(Object.entries(b).sort());
 
+function copyTree(source, destination) {
+  // Individual Unicode-aware file operations avoid cpSync's Windows directory
+  // fast path; the same path is used for staging and private runtime retention.
+  fs.mkdirSync(destination, { recursive: true });
+  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    need(!entry.isSymbolicLink(), 'SYMLINK', '复制来源包含符号链接，未继续。');
+    const from = path.join(source, entry.name);
+    const to = path.join(destination, entry.name);
+    if (entry.isDirectory()) copyTree(from, to);
+    else {
+      need(entry.isFile(), 'INVALID_FILE', '复制来源包含非常规文件。');
+      fs.copyFileSync(from, to);
+    }
+  }
+}
+
 function checkOwnership(home, target) {
   const directory = path.join(home, '.teamai');
   const journal = path.join(directory, 'managed-resources.journal.json');
@@ -136,7 +152,7 @@ export function install({ agent, home = os.homedir(), env = process.env, source 
     if (fs.existsSync(runtime)) {
       regularPath(runtime);
       inventory(runtime); // Refuse symlink escapes inside private data too.
-      fs.cpSync(runtime, path.join(stage, '.runtime'), { recursive: true });
+      copyTree(runtime, path.join(stage, '.runtime'));
     }
     fs.writeFileSync(path.join(stage, RECEIPT), JSON.stringify({ name: NAME, version: VERSION, files }, null, 2) + '\n');
     if (fs.existsSync(target)) { fs.renameSync(target, previous); moved = true; }
@@ -300,7 +316,7 @@ export function connect({ repo, workspace, agent, accept = false, home = os.home
   }
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'team-assistant-'));
   const stagedSource = path.join(stage, NAME);
-  fs.cpSync(source, stagedSource, { recursive: true });
+  copyTree(source, stagedSource);
   try {
     const options = { cwd: stage, env: { ...effectiveEnv, HOME: home, USERPROFILE: home }, stdio: 'inherit' };
     if (!local) client.command(process.execPath, [team.cli, 'init', `https://github.com/${key}.git`, '--scope', 'user', '--agent', agent], options);

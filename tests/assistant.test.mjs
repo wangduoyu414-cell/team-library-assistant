@@ -59,7 +59,7 @@ test('connection preserves recorded Claude root and rejects environment drift or
   }
 });
 
-for (const agent of ['codex', 'claude', 'workbuddy', 'qwen', 'dsh']) test(`${agent}: complete independent package installs, repeats and preserves runtime`, t => {
+for (const agent of ['codex', 'claude', 'workbuddy', 'qwen', 'dsh']) test(`${agent}: complete independent package installs, repeats and preserves runtime`, async t => {
   const home = temporary(t);
   const first = install({ agent, home, env: {} });
   assert.equal(first.hostLoaded, false);
@@ -69,7 +69,8 @@ for (const agent of ['codex', 'claude', 'workbuddy', 'qwen', 'dsh']) test(`${age
   fs.mkdirSync(runtime);
   fs.writeFileSync(path.join(runtime, 'notes.txt'), 'private');
   const next = path.join(home, 'download');
-  fs.cpSync(SOURCE, next, { recursive: true });
+  await fs.promises.cp(SOURCE, next, { recursive: true });
+  assert.deepEqual(inventory(next), inventory(SOURCE));
   fs.appendFileSync(path.join(next, 'SKILL.md'), '\nUpdated package.\n');
   assert.equal(install({ agent, home, env: {}, source: next }).changed, true);
   assert.equal(fs.readFileSync(path.join(runtime, 'notes.txt'), 'utf8'), 'private');
